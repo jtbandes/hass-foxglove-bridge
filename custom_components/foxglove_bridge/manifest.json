@@ -1,0 +1,15 @@
+{
+  "domain": "foxglove_bridge",
+  "name": "Foxglove Bridge",
+  "version": "0.1.0",
+  "codeowners": ["@jtbandes"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://www.home-assistant.io/integrations/foxglove_bridge",
+  "homekit": {},
+  "iot_class": "calculated",
+  "quality_scale": "bronze",
+  "requirements": ["foxglove-sdk==0.4.0"],
+  "ssdp": [],
+  "zeroconf": []
+}
