@@ -1,0 +1,2 @@
+# Home Assistant Foxglove Bridge
+
