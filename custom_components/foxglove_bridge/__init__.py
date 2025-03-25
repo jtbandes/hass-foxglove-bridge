@@ -6,15 +6,23 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from functools import partial
+import json
 import logging
 
 from foxglove import Channel, ServerListener, start_server
+from foxglove.websocket import Capability, Service, ServiceRequest, ServiceSchema
 
 from homeassistant.components.network import async_get_source_ip
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PORT, Platform
-from homeassistant.core import Event, EventStateChangedData, HomeAssistant
+from homeassistant.core import (
+    Event,
+    EventStateChangedData,
+    HomeAssistant,
+    SupportsResponse,
+)
 from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.util.json import json_loads
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,6 +34,7 @@ type FoxgloveBridgeConfigEntry = ConfigEntry[FoxgloveBridge]
 class FoxgloveBridge(ServerListener):
     channels_by_topic: dict[str, Channel]
     unsub_by_topic: dict[str, Callable[[], None]]
+    services_by_name: dict[str, Service]
 
     def __init__(
         self,
@@ -41,10 +50,13 @@ class FoxgloveBridge(ServerListener):
             name=f"Home Assistant {hass.config.location_name}",
             host=host,
             port=port,
+            capabilities=[Capability.Services],
             server_listener=self,
+            supported_encodings=["json"],
         )
         self.channels_by_topic = {}
         self.unsub_by_topic = {}
+        self.services_by_name = {}
 
         async def log_ip():
             server_ip = await async_get_source_ip(hass)
@@ -59,12 +71,17 @@ class FoxgloveBridge(ServerListener):
         self.refresh_task = self.entry.async_create_background_task(
             self.hass, self._refresh_channels(), "_refresh_channels"
         )
+        self.refresh_task = self.entry.async_create_background_task(
+            self.hass, self._refresh_services(), "_refresh_services"
+        )
 
         # self.event_listener = hass.bus.async_listen(MATCH_ALL,self._handle_event)
 
     def stop(self):
         self.server.stop()
         self.refresh_task.cancel()
+        for chan in self.channels_by_topic.values():
+            chan.close()
         self.channels_by_topic.clear()
         for unsub in self.unsub_by_topic.values():
             unsub()
@@ -77,12 +94,13 @@ class FoxgloveBridge(ServerListener):
             remove_channels = self.channels_by_topic.keys() - entity_ids
             if new_channels or remove_channels:
                 _LOGGER.debug(
-                    "Refreshed channels, added %d, removed %d",
+                    "Refreshed channels, adding %d, removing %d",
                     len(new_channels),
                     len(remove_channels),
                 )
             for entity_id in remove_channels:
-                del self.channels_by_topic[entity_id]
+                chan = self.channels_by_topic.pop(entity_id)
+                chan.close()
                 if unsub := self.unsub_by_topic.pop(entity_id, None):
                     _LOGGER.debug(
                         "Unsubscribing from state changes for %s (entity disappeared)",
@@ -94,6 +112,80 @@ class FoxgloveBridge(ServerListener):
                     entity_id, message_encoding="json"
                 )
             await asyncio.sleep(5)
+
+    async def _refresh_services(self):
+        while True:
+            services_by_domain = self.hass.services.async_services()
+            all_services_by_name = {
+                f"{domain}.{service_name}": (domain, service_name, service)
+                for domain, services in services_by_domain.items()
+                for service_name, service in services.items()
+            }
+            new_services = all_services_by_name.keys() - self.services_by_name.keys()
+            remove_services = self.services_by_name.keys() - all_services_by_name.keys()
+
+            if new_services or remove_services:
+                _LOGGER.debug(
+                    "Refreshed services, adding %d, removing %d",
+                    len(new_services),
+                    len(remove_services),
+                )
+            for name in remove_services:
+                _LOGGER.debug(
+                    "Removing service %s (service disappeared)",
+                    name,
+                )
+                del self.services_by_name[name]
+            self.server.remove_services(list(remove_services))
+
+            added_services = []
+            for name in new_services:
+                domain, service_name, service = all_services_by_name[name]
+                _LOGGER.debug(
+                    "Registering new service %s",
+                    name,
+                )
+                assert name not in self.services_by_name
+                fg_service = Service(
+                    name=name,
+                    schema=ServiceSchema(name=f"{name}#request"),
+                    handler=partial(
+                        self._handle_service_request,
+                        domain=domain,
+                        service_name=service_name,
+                        supports_response=service.supports_response,
+                    ),
+                )
+                self.services_by_name[name] = fg_service
+                added_services.append(fg_service)
+            self.server.add_services(added_services)
+            await asyncio.sleep(5)
+
+    def _handle_service_request(
+        self,
+        request: ServiceRequest,
+        *,
+        domain: str,
+        service_name: str,
+        supports_response: SupportsResponse,
+    ) -> bytes:
+        try:
+            return_response = supports_response != SupportsResponse.NONE
+            response = self.hass.services.call(
+                domain,
+                service_name,
+                json_loads(request.payload),
+                blocking=True,
+                return_response=return_response,
+            )
+            if not return_response:
+                return b'{"success": true, "message": "(service does not support returning a response)"}'
+            return json.dumps(response).encode()
+        except Exception:
+            _LOGGER.exception(
+                "Error handling service request for %s.%s", domain, service_name
+            )
+            raise
 
     def on_subscribe(self, client, channel) -> None:
         self.hass.loop.call_soon_threadsafe(
@@ -128,7 +220,8 @@ class FoxgloveBridge(ServerListener):
     def _handle_state_change(
         self, channel: Channel, event: Event[EventStateChangedData]
     ):
-        channel.log(event.data["new_state"].as_dict())
+        if state := event.data["new_state"]:
+            channel.log(state.as_dict())
 
 
 async def async_setup_entry(
