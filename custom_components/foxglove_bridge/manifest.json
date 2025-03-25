@@ -8,5 +8,6 @@
   "iot_class": "calculated",
   "quality_scale": "bronze",
   "requirements": ["foxglove-sdk==0.4.0"],
-  "issue_tracker": "https://github.com/jtbandes/hass-foxglove-bridge/issues"
+  "issue_tracker": "https://github.com/jtbandes/hass-foxglove-bridge/issues",
+  "dependencies": ["network"]
 }
