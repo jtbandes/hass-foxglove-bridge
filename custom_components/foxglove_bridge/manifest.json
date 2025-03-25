@@ -4,12 +4,9 @@
   "version": "0.1.0",
   "codeowners": ["@jtbandes"],
   "config_flow": true,
-  "dependencies": [],
-  "documentation": "https://www.home-assistant.io/integrations/foxglove_bridge",
-  "homekit": {},
+  "documentation": "https://github.com/jtbandes/hass-foxglove-bridge",
   "iot_class": "calculated",
   "quality_scale": "bronze",
   "requirements": ["foxglove-sdk==0.4.0"],
-  "ssdp": [],
-  "zeroconf": []
+  "issue_tracker": "https://github.com/jtbandes/hass-foxglove-bridge/issues"
 }
