@@ -8,8 +8,10 @@ from collections.abc import Callable
 from functools import partial
 import json
 import logging
+from pathlib import Path
+import time
 
-from foxglove import Channel, ServerListener, start_server
+from foxglove import Channel, MCAPWriter, ServerListener, open_mcap, start_server
 from foxglove.websocket import Capability, Service, ServiceRequest, ServiceSchema
 
 from homeassistant.components.network import async_get_source_ip
@@ -24,9 +26,11 @@ from homeassistant.core import (
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util.json import json_loads
 
+from .const import DOMAIN
+
 _LOGGER = logging.getLogger(__name__)
 
-_PLATFORMS: list[Platform] = [Platform.LIGHT]
+_PLATFORMS: list[Platform] = [Platform.SWITCH]
 
 type FoxgloveBridgeConfigEntry = ConfigEntry[FoxgloveBridge]
 
@@ -35,6 +39,7 @@ class FoxgloveBridge(ServerListener):
     channels_by_topic: dict[str, Channel]
     unsub_by_topic: dict[str, Callable[[], None]]
     services_by_name: dict[str, Service]
+    mcap_writer: MCAPWriter | None
 
     def __init__(
         self,
@@ -57,6 +62,7 @@ class FoxgloveBridge(ServerListener):
         self.channels_by_topic = {}
         self.unsub_by_topic = {}
         self.services_by_name = {}
+        self.mcap_writer = None
 
         async def log_ip():
             server_ip = await async_get_source_ip(hass)
@@ -68,10 +74,10 @@ class FoxgloveBridge(ServerListener):
             )
 
         self.entry.async_create_task(self.hass, log_ip())
-        self.refresh_task = self.entry.async_create_background_task(
+        self.refresh_channels_task = self.entry.async_create_background_task(
             self.hass, self._refresh_channels(), "_refresh_channels"
         )
-        self.refresh_task = self.entry.async_create_background_task(
+        self.refresh_services_task = self.entry.async_create_background_task(
             self.hass, self._refresh_services(), "_refresh_services"
         )
 
@@ -79,7 +85,8 @@ class FoxgloveBridge(ServerListener):
 
     def stop(self):
         self.server.stop()
-        self.refresh_task.cancel()
+        self.refresh_channels_task.cancel()
+        self.refresh_services_task.cancel()
         for chan in self.channels_by_topic.values():
             chan.close()
         self.channels_by_topic.clear()
@@ -223,6 +230,34 @@ class FoxgloveBridge(ServerListener):
         if state := event.data["new_state"]:
             channel.log(state.as_dict())
 
+    def start_recording(self):
+        if self.mcap_writer:
+            _LOGGER.warning(
+                "Warning: start_recording called but recording was already in progress"
+            )
+            return
+        recording_dir = self.hass.config.media_dirs.get(
+            "local", next(iter(self.hass.config.media_dirs.values()), None)
+        )
+        if recording_dir is None:
+            raise FileNotFoundError("No media_dirs configured")
+        recording_dir = Path(recording_dir) / DOMAIN
+        recording_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = time.time_ns()
+        path = recording_dir / f"home_assistant_{timestamp}.mcap"
+        self.mcap_writer = open_mcap(path)
+        _LOGGER.info("Started recording to %s", path)
+
+    def stop_recording(self):
+        if not self.mcap_writer:
+            _LOGGER.warning(
+                "Warning: stop_recording called but recording was not in progress"
+            )
+            return
+        _LOGGER.info("Stopped recording")
+        self.mcap_writer.close()
+        self.mcap_writer = None
+
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: FoxgloveBridgeConfigEntry
@@ -236,7 +271,7 @@ async def async_setup_entry(
         port=entry.data[CONF_PORT],
     )
 
-    # await hass.config_entries.async_forward_entry_setups(entry, _PLATFORMS)
+    await hass.config_entries.async_forward_entry_setups(entry, _PLATFORMS)
 
     return True
 
@@ -246,11 +281,4 @@ async def async_unload_entry(
 ) -> bool:
     """Unload a config entry."""
     entry.runtime_data.stop()
-    # return await hass.config_entries.async_unload_platforms(entry, _PLATFORMS)
-
-
-# async def async_setup(hass, config):
-#     hass.states.async_set("foxglove_bridge.hello_world", "Test")
-
-#     # Return boolean to indicate that initialization was successful.
-#     return True
+    return await hass.config_entries.async_unload_platforms(entry, _PLATFORMS)

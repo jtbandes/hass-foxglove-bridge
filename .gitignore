@@ -3,10 +3,11 @@ __pycache__
 
 .storage
 /*.yaml
-.HA_VERSION
+/.HA_VERSION
 *.db
 *.db-shm
 *.db-wal
 *.log
 *.log.*
-blueprints
+/blueprints
+/media
