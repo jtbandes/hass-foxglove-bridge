@@ -19,7 +19,13 @@ from foxglove import (
     open_mcap,
     start_server,
 )
-from foxglove.websocket import Capability, Service, ServiceRequest, ServiceSchema
+from foxglove.websocket import (
+    Capability,
+    MessageSchema,
+    Service,
+    ServiceRequest,
+    ServiceSchema,
+)
 
 from homeassistant.components.network import async_get_source_ip
 from homeassistant.config_entries import ConfigEntry
@@ -34,6 +40,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util.json import json_loads
 
 from .const import DOMAIN
+from .schemas import vol_to_jsonschema
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -177,9 +184,22 @@ class FoxgloveBridge(ServerListener):
                     name,
                 )
                 assert name not in self.services_by_name
+                schema = ServiceSchema(name=name)
+                try:
+                    if req_jsonschema := vol_to_jsonschema(name, service.schema):
+                        schema.request = MessageSchema(
+                            encoding="json",
+                            schema=Schema(
+                                name=f"{name}#request",
+                                encoding="jsonschema",
+                                data=json.dumps(req_jsonschema).encode(),
+                            ),
+                        )
+                except Exception:
+                    _LOGGER.exception("Failed to create service schema for %s", name)
                 fg_service = Service(
                     name=name,
-                    schema=ServiceSchema(name=f"{name}#request"),
+                    schema=schema,
                     handler=partial(
                         self._handle_service_request,
                         domain=domain,
