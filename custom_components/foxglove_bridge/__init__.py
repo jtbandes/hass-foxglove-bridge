@@ -84,6 +84,7 @@ class FoxgloveBridge(ServerListener):
         # self.event_listener = hass.bus.async_listen(MATCH_ALL,self._handle_event)
 
     def stop(self):
+        self.stop_recording()
         self.server.stop()
         self.refresh_channels_task.cancel()
         self.refresh_services_task.cancel()
@@ -250,9 +251,6 @@ class FoxgloveBridge(ServerListener):
 
     def stop_recording(self):
         if not self.mcap_writer:
-            _LOGGER.warning(
-                "Warning: stop_recording called but recording was not in progress"
-            )
             return
         _LOGGER.info("Stopped recording")
         self.mcap_writer.close()

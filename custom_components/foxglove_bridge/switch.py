@@ -34,6 +34,7 @@ class McapRecordingSwitch(SwitchEntity):
             identifiers={(DOMAIN, entry_id)},
         )
         self._attr_is_on = False
+        self._attr_entity_registry_visible_default = False
 
     async def async_turn_on(self) -> None:
         self._bridge.start_recording()
