@@ -11,7 +11,14 @@ import logging
 from pathlib import Path
 import time
 
-from foxglove import Channel, MCAPWriter, ServerListener, open_mcap, start_server
+from foxglove import (
+    Channel,
+    MCAPWriter,
+    Schema,
+    ServerListener,
+    open_mcap,
+    start_server,
+)
 from foxglove.websocket import Capability, Service, ServiceRequest, ServiceSchema
 
 from homeassistant.components.network import async_get_source_ip
@@ -33,6 +40,24 @@ _LOGGER = logging.getLogger(__name__)
 _PLATFORMS: list[Platform] = [Platform.SWITCH]
 
 type FoxgloveBridgeConfigEntry = ConfigEntry[FoxgloveBridge]
+
+_STATE_SCHEMA = Schema(
+    name="homeassistant.core.State",
+    encoding="jsonschema",
+    data=json.dumps(
+        {
+            "type": "object",
+            "properties": {
+                "entity_id": {"type": "string"},
+                "state": {"type": "string"},
+                "attributes": {"type": "object"},
+                "last_changed": {"type": "string"},
+                "last_reported": {"type": "string"},
+                "last_updated": {"type": "string"},
+            },
+        }
+    ).encode(),
+)
 
 
 class FoxgloveBridge(ServerListener):
@@ -81,8 +106,6 @@ class FoxgloveBridge(ServerListener):
             self.hass, self._refresh_services(), "_refresh_services"
         )
 
-        # self.event_listener = hass.bus.async_listen(MATCH_ALL,self._handle_event)
-
     def stop(self):
         self.stop_recording()
         self.server.stop()
@@ -117,7 +140,7 @@ class FoxgloveBridge(ServerListener):
                     unsub()
             for entity_id in new_channels:
                 self.channels_by_topic[entity_id] = Channel(
-                    entity_id, message_encoding="json"
+                    entity_id, message_encoding="json", schema=_STATE_SCHEMA
                 )
             await asyncio.sleep(5)
 
