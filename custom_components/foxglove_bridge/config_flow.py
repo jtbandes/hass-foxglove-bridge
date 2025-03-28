@@ -8,9 +8,10 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
-from homeassistant.const import CONF_HOST, CONF_PORT
+from homeassistant.const import CONF_API_KEY, CONF_DEVICE_ID, CONF_HOST, CONF_PORT
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import DOMAIN
 
@@ -22,6 +23,8 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Required(CONF_PORT, default=8765): vol.All(
             int, vol.Range(min=1, max=65535)
         ),
+        CONF_API_KEY: str,
+        CONF_DEVICE_ID: str,
     }
 )
 
@@ -31,16 +34,26 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
 
     Data has the keys from STEP_USER_DATA_SCHEMA with values provided by the user.
     """
-    # TODO validate the data can be used to set up a connection.
-
-    # If your PyPI package is not built with async, pass your methods
-    # to the executor:
-    # await hass.async_add_executor_job(
-    #     your_validate_func, data[CONF_USERNAME], data[CONF_PASSWORD]
-    # )
-
     host = data[CONF_HOST]
     port = data[CONF_PORT]
+
+    device_id = data.get(CONF_DEVICE_ID)
+    api_key = data.get(CONF_API_KEY)
+
+    if api_key and device_id:
+        websession = async_get_clientsession(hass)
+        req_json = {"filename": "dummy"}
+        auth_headers = {"Authorization": f"Bearer {api_key}"}
+        res = await websession.post(
+            "https://api.foxglove.dev/v1/data/upload",
+            json=req_json,
+            headers=auth_headers,
+        )
+        if res.status != 200:
+            _LOGGER.error("Failed to authenticate: %s", res)
+            raise InvalidAuth
+    elif api_key or device_id:
+        raise ApiKeyRequiredError
 
     # Return info that you want to store in the config entry.
     return {"title": f"{host}:{port}"}
@@ -59,6 +72,8 @@ class ConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             try:
                 info = await validate_input(self.hass, user_input)
+            except ApiKeyRequiredError:
+                errors["base"] = "api_key_required"
             except CannotConnect:
                 errors["base"] = "cannot_connect"
             except InvalidAuth:
@@ -80,3 +95,7 @@ class CannotConnect(HomeAssistantError):
 
 class InvalidAuth(HomeAssistantError):
     """Error to indicate there is invalid auth."""
+
+
+class ApiKeyRequiredError(HomeAssistantError):
+    """Error to indicate credentials were not provided."""

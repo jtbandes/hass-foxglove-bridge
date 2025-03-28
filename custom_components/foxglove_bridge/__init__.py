@@ -29,13 +29,20 @@ from foxglove.websocket import (
 
 from homeassistant.components.network import async_get_source_ip
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_HOST, CONF_PORT, Platform
+from homeassistant.const import (
+    CONF_API_KEY,
+    CONF_DEVICE_ID,
+    CONF_HOST,
+    CONF_PORT,
+    Platform,
+)
 from homeassistant.core import (
     Event,
     EventStateChangedData,
     HomeAssistant,
     SupportsResponse,
 )
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util.json import json_loads
 
@@ -72,6 +79,7 @@ class FoxgloveBridge(ServerListener):
     unsub_by_topic: dict[str, Callable[[], None]]
     services_by_name: dict[str, Service]
     mcap_writer: MCAPWriter | None
+    mcap_path: Path | None
 
     def __init__(
         self,
@@ -80,6 +88,8 @@ class FoxgloveBridge(ServerListener):
         entry: FoxgloveBridgeConfigEntry,
         host: str,
         port: int,
+        api_key: str | None,
+        device_id: str | None,
     ) -> None:
         self.hass = hass
         self.entry = entry
@@ -91,10 +101,13 @@ class FoxgloveBridge(ServerListener):
             server_listener=self,
             supported_encodings=["json"],
         )
+        self.api_key = api_key
+        self.device_id = device_id
         self.channels_by_topic = {}
         self.unsub_by_topic = {}
         self.services_by_name = {}
         self.mcap_writer = None
+        self.mcap_path = None
 
         async def log_ip():
             server_ip = await async_get_source_ip(hass)
@@ -290,6 +303,7 @@ class FoxgloveBridge(ServerListener):
         timestamp = time.time_ns()
         path = recording_dir / f"home_assistant_{timestamp}.mcap"
         self.mcap_writer = open_mcap(path)
+        self.mcap_path = path
         _LOGGER.info("Started recording to %s", path)
 
     def stop_recording(self):
@@ -298,6 +312,44 @@ class FoxgloveBridge(ServerListener):
         _LOGGER.info("Stopped recording")
         self.mcap_writer.close()
         self.mcap_writer = None
+        if self.api_key and self.device_id:
+            self.entry.async_create_background_task(
+                self.hass,
+                _upload_mcap(
+                    async_get_clientsession(self.hass),
+                    self.api_key,
+                    self.device_id,
+                    self.mcap_path,
+                ),
+                "_upload_mcap",
+            )
+        self.mcap_path = None
+
+
+async def _upload_mcap(
+    websession: asyncio.ClientSession,
+    api_key: str,
+    device_id: str,
+    mcap_path: Path,
+):
+    """Upload a MCAP file and delete it once the upload completes."""
+    try:
+        req_json = {"filename": mcap_path.name, "deviceId": device_id}
+        auth_headers = {"Authorization": f"Bearer {api_key}"}
+        res = await websession.post(
+            "https://api.foxglove.dev/v1/data/upload",
+            json=req_json,
+            headers=auth_headers,
+        )
+        upload_link = (await res.json())["link"]
+        with mcap_path.open("rb") as f:
+            await websession.put(upload_link, data=f)
+        _LOGGER.info("Uploaded %s", mcap_path)
+        mcap_path.unlink()
+        _LOGGER.info("Deleted %s", mcap_path)
+    except Exception:
+        _LOGGER.exception("Failed to upload %s", mcap_path)
+        raise
 
 
 async def async_setup_entry(
@@ -310,6 +362,8 @@ async def async_setup_entry(
         entry=entry,
         host=entry.data[CONF_HOST],
         port=entry.data[CONF_PORT],
+        api_key=entry.data.get(CONF_API_KEY),
+        device_id=entry.data.get(CONF_DEVICE_ID),
     )
 
     await hass.config_entries.async_forward_entry_setups(entry, _PLATFORMS)

@@ -4,15 +4,17 @@
       "user": {
         "data": {
           "host": "[%key:common::config_flow::data::host%]",
-          "username": "[%key:common::config_flow::data::username%]",
-          "password": "[%key:common::config_flow::data::password%]"
+          "port": "[%key:common::config_flow::data::port%]",
+          "device_id": "Device ID (dev_...)",
+          "api_key": "API Key (fox_sk_...)"
         }
       }
     },
     "error": {
       "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
       "invalid_auth": "[%key:common::config_flow::error::invalid_auth%]",
-      "unknown": "[%key:common::config_flow::error::unknown%]"
+      "unknown": "[%key:common::config_flow::error::unknown%]",
+      "api_key_required": "Both API Key and Device ID must be set"
     },
     "abort": {
       "already_configured": "[%key:common::config_flow::abort::already_configured_device%]"
